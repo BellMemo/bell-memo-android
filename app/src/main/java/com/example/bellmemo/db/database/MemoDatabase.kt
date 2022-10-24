@@ -5,7 +5,7 @@ import androidx.room.RoomDatabase
 import com.example.bellmemo.db.dao.MemoDataDao
 import com.example.bellmemo.db.entity.MemoData
 
-@Database(entities = [MemoData::class], version = 1)
-abstract class MemoDatabase: RoomDatabase() {
+@Database(entities = [MemoData::class], version = 1, exportSchema = false)
+abstract class MemoDatabase : RoomDatabase() {
     abstract fun MemoDataDao(): MemoDataDao
 }
