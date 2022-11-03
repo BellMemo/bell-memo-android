@@ -8,6 +8,7 @@ import androidx.navigation.ui.navigateUp
 import androidx.navigation.ui.setupActionBarWithNavController
 import android.view.Menu
 import android.view.MenuItem
+import android.widget.Toast
 import com.example.bellmemo.databinding.ActivityMainBinding
 
 class MainActivity : AppCompatActivity() {
@@ -47,5 +48,11 @@ class MainActivity : AppCompatActivity() {
     override fun onSupportNavigateUp(): Boolean {
         val navController = findNavController(R.id.nav_host_fragment_content_main)
         return navController.navigateUp(appBarConfiguration) || super.onSupportNavigateUp()
+    }
+
+
+    fun handleClickFabAdd() {
+        val toast = Toast.makeText(this, "点击添加", Toast.LENGTH_SHORT)
+        toast.show()
     }
 }
