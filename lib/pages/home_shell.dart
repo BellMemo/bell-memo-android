@@ -12,12 +12,14 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   int _index = 0;
+  bool _cloudVisited = false;
 
   final _memoPageKey = GlobalKey<MemoPageState>();
+  final _cloudPageKey = GlobalKey<CloudPageState>();
 
   List<Widget> get _pages => [
         MemoPage(key: _memoPageKey),
-        const CloudPage(),
+        _cloudVisited ? CloudPage(key: _cloudPageKey) : const SizedBox.shrink(),
       ];
 
   String get _title => switch (_index) {
@@ -28,6 +30,7 @@ class _HomeShellState extends State<HomeShell> {
 
   @override
   Widget build(BuildContext context) {
+    final isCloud = _index == 1;
     return Scaffold(
       appBar: AppBar(
         leading: Builder(
@@ -38,6 +41,14 @@ class _HomeShellState extends State<HomeShell> {
           ),
         ),
         title: Text(_title),
+        actions: [
+          if (isCloud)
+            IconButton(
+              tooltip: '刷新',
+              icon: const Icon(Icons.refresh),
+              onPressed: () => _cloudPageKey.currentState?.refresh(),
+            ),
+        ],
       ),
       drawer: Drawer(
         child: SafeArea(
@@ -86,10 +97,24 @@ class _HomeShellState extends State<HomeShell> {
                       title: const Text('网盘（开发中...)'),
                       selected: _index == 1,
                       onTap: () {
-                        setState(() => _index = 1);
+                        setState(() {
+                          _index = 1;
+                          _cloudVisited = true;
+                        });
                         Navigator.pop(context);
                       },
                     ),
+                    if (isCloud) ...[
+                      const Divider(height: 1),
+                      ListTile(
+                        leading: const Icon(Icons.settings),
+                        title: const Text('网盘设置'),
+                        onTap: () {
+                          Navigator.pop(context);
+                          _cloudPageKey.currentState?.openSettings();
+                        },
+                      ),
+                    ],
                   ],
                 ),
               ),

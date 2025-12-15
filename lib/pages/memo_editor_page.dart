@@ -2,9 +2,11 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_quill/flutter_quill.dart' as quill;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../memo/memo.dart';
 import '../memo/memo_store.dart';
+import '../services/cloud_service.dart';
 
 class MemoEditorPage extends StatefulWidget {
   final Memo? memo;
@@ -94,6 +96,7 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
             );
 
       await _store.upsert(toSave);
+      await _syncSavedMemoToCloudIfConfigured(toSave);
 
       if (popAfterSave && mounted) Navigator.pop(context, true);
       return true;
@@ -106,6 +109,30 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
       return false;
     } finally {
       if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _syncSavedMemoToCloudIfConfigured(Memo memo) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final url = prefs.getString('cloud_url');
+      final user = prefs.getString('cloud_user');
+      final pass = prefs.getString('cloud_pass');
+      final root = prefs.getString('cloud_root');
+
+      if (url == null || user == null || pass == null) return;
+      if (root != null && root.isNotEmpty) {
+        CloudService().setMemoRoot(root);
+      }
+
+      // 如果未连接则尝试连接一次；连接失败不影响本地保存
+      if (!CloudService().isConnected) {
+        await CloudService().connect(url, user, pass);
+      }
+
+      await CloudService().syncMemoToCloud(memo);
+    } catch (_) {
+      // 云同步失败不影响本地保存
     }
   }
 
