@@ -1,39 +1,508 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:webdav_client/webdav_client.dart' as webdav;
+import '../services/cloud_service.dart';
+import '../memo/memo_store.dart';
+import 'cloud_md_viewer.dart';
 
-class CloudPage extends StatelessWidget {
+class CloudPage extends StatefulWidget {
   const CloudPage({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
+  State<CloudPage> createState() => _CloudPageState();
+}
 
+class _CloudPageState extends State<CloudPage> {
+  bool _isConnected = false;
+  bool _isLoading = false;
+  String _currentPath = '/';
+  List<webdav.File> _files = [];
+  String? _error;
+
+  final TextEditingController _urlController = TextEditingController(text: 'http://');
+  final TextEditingController _userController = TextEditingController(text: 'admin');
+  final TextEditingController _passController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _checkSavedConnection();
+  }
+
+  Future<void> _checkSavedConnection() async {
+    final prefs = await SharedPreferences.getInstance();
+    final url = prefs.getString('cloud_url');
+    final user = prefs.getString('cloud_user');
+    final pass = prefs.getString('cloud_pass');
+
+    if (url != null && user != null && pass != null) {
+      _urlController.text = url;
+      _userController.text = user;
+      _passController.text = pass;
+      _connect(url, user, pass);
+    }
+  }
+
+  Future<void> _connect(String url, String user, String pass) async {
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+
+    try {
+      await CloudService().connect(url, user, pass);
+      
+      // 保存凭据
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('cloud_url', url);
+      await prefs.setString('cloud_user', user);
+      await prefs.setString('cloud_pass', pass);
+
+      setState(() {
+        _isConnected = true;
+        _currentPath = '/';
+      });
+      // 关闭 Drawer (如果打开)
+      if (mounted && Scaffold.maybeOf(context)?.hasDrawer == true) {
+         Navigator.pop(context); 
+      }
+      
+      await _loadFiles();
+      
+      // 连接成功后，触发一次自动备份
+      _syncAllMemos(silent: true);
+    } catch (e) {
+      setState(() {
+        _error = e.toString();
+        _isConnected = false;
+      });
+    } finally {
+      setState(() {
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _loadFiles() async {
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+    try {
+      final files = await CloudService().listFiles(_currentPath);
+      // 排序：文件夹在前，文件在后
+      files.sort((a, b) {
+        if ((a.isDir ?? false) == (b.isDir ?? false)) {
+          return (a.name ?? '').compareTo(b.name ?? '');
+        }
+        return (a.isDir ?? false) ? -1 : 1;
+      });
+      
+      if (mounted) {
+        setState(() {
+          _files = files;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = e.toString();
+        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _syncAllMemos({bool silent = false}) async {
+    if (!silent) {
+      setState(() => _isLoading = true);
+    }
+    
+    try {
+      final memos = await MemoStore().loadAll();
+      int successCount = 0;
+      for (final memo in memos) {
+        await CloudService().syncMemoToCloud(memo);
+        successCount++;
+      }
+      
+      if (!silent && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('备份完成: $successCount 个备忘录')),
+        );
+      }
+      
+      // 刷新文件列表
+      _loadFiles();
+    } catch (e) {
+      if (!silent && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('备份失败: $e')),
+        );
+      }
+    } finally {
+      if (!silent && mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
+  }
+
+  void _navigateToFolder(String folderName) {
+    setState(() {
+      if (_currentPath == '/') {
+        _currentPath = '/$folderName';
+      } else {
+        _currentPath = '$_currentPath/$folderName';
+      }
+    });
+    _loadFiles();
+  }
+
+  void _navigateUp() {
+    if (_currentPath == '/') return;
+    final parent = _currentPath.substring(0, _currentPath.lastIndexOf('/'));
+    setState(() {
+      _currentPath = parent.isEmpty ? '/' : parent;
+    });
+    _loadFiles();
+  }
+
+  void _logout() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('cloud_url');
+    await prefs.remove('cloud_user');
+    await prefs.remove('cloud_pass');
+    CloudService().disconnect();
+    
+    // 如果是在 Drawer 里点击退出，先关闭 Drawer
+    if (Scaffold.maybeOf(context)?.isDrawerOpen ?? false) {
+      Navigator.pop(context);
+    }
+
+    setState(() {
+      _isConnected = false;
+      _files = [];
+      _currentPath = '/';
+      _urlController.text = 'http://';
+      _userController.text = 'admin';
+      _passController.clear();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_isConnected) {
+      return _buildLoginForm(context);
+    }
+    return _buildFileBrowser(context);
+  }
+
+  Widget _buildDrawer(BuildContext context) {
+    return Drawer(
+      child: ListView(
+        padding: EdgeInsets.zero,
+        children: [
+          DrawerHeader(
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.primaryContainer,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(Icons.cloud_circle, size: 48),
+                const SizedBox(height: 16),
+                Text(
+                  '服务端设置',
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    color: Theme.of(context).colorScheme.onPrimaryContainer,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('连接配置', style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: _urlController,
+                  decoration: const InputDecoration(
+                    labelText: '服务器地址',
+                    hintText: 'http://192.168.1.x:5244/dav',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _userController,
+                  decoration: const InputDecoration(
+                    labelText: '用户名',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _passController,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                    labelText: '密码',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: () {
+                      _connect(
+                        _urlController.text,
+                        _userController.text,
+                        _passController.text,
+                      );
+                      Navigator.pop(context); // 关闭 Drawer
+                    },
+                    icon: const Icon(Icons.save),
+                    label: const Text('保存并重连'),
+                  ),
+                ),
+                const Divider(height: 48),
+                ListTile(
+                  leading: const Icon(Icons.backup, color: Colors.green),
+                  title: const Text('立即备份所有备忘录', style: TextStyle(color: Colors.green)),
+                  onTap: () {
+                    Navigator.pop(context); // 关闭 Drawer
+                    _syncAllMemos();
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.logout, color: Colors.red),
+                  title: const Text('断开连接', style: TextStyle(color: Colors.red)),
+                  onTap: _logout,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLoginForm(BuildContext context) {
     return Center(
-      child: Padding(
+      child: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.cloud_outlined, size: 64, color: cs.onSurfaceVariant),
-            const SizedBox(height: 16),
-            Text(
-              '网盘功能暂未实现',
-              style: Theme.of(context)
-                  .textTheme
-                  .titleMedium
-                  ?.copyWith(color: cs.onSurfaceVariant),
+        child: Card(
+          child: Padding(
+            padding: const EdgeInsets.all(24.0),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.cloud_sync, size: 64, color: Colors.blue),
+                const SizedBox(height: 16),
+                const Text('连接 Bell Cloud', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 24),
+                TextField(
+                  controller: _urlController,
+                  decoration: const InputDecoration(
+                    labelText: '服务器地址 (WebDAV)',
+                    hintText: 'http://192.168.1.x:5244/dav',
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.link),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: _userController,
+                  decoration: const InputDecoration(
+                    labelText: '用户名',
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.person),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: _passController,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                    labelText: '密码',
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.lock),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                if (_error != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 16),
+                    child: Text(_error!, style: const TextStyle(color: Colors.red)),
+                  ),
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: FilledButton(
+                    onPressed: _isLoading
+                        ? null
+                        : () => _connect(
+                              _urlController.text,
+                              _userController.text,
+                              _passController.text,
+                            ),
+                    child: _isLoading
+                        ? const SizedBox(
+                            width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                        : const Text('连接'),
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 8),
-            Text(
-              '后续可以在这里接入同步/登录等能力。',
-              style: Theme.of(context)
-                  .textTheme
-                  .bodyMedium
-                  ?.copyWith(color: cs.onSurfaceVariant),
-              textAlign: TextAlign.center,
-            ),
-          ],
+          ),
         ),
       ),
     );
+  }
+
+  Widget _buildFileBrowser(BuildContext context) {
+    // 根据当前路径判断左上角图标：根目录显示菜单，子目录显示返回
+    final bool isRoot = _currentPath == '/';
+    
+    return WillPopScope(
+      onWillPop: () async {
+        if (!isRoot) {
+          _navigateUp();
+          return false;
+        }
+        return true;
+      },
+      child: Scaffold(
+        drawer: _buildDrawer(context),
+        appBar: AppBar(
+          title: Text(isRoot ? 'Bell Cloud' : _currentPath.split('/').last),
+          leading: Builder(
+            builder: (context) {
+              if (isRoot) {
+                return IconButton(
+                  icon: const Icon(Icons.menu),
+                  onPressed: () {
+                    Scaffold.of(context).openDrawer();
+                  },
+                );
+              } else {
+                return IconButton(
+                  icon: const Icon(Icons.arrow_back),
+                  onPressed: _navigateUp,
+                );
+              }
+            },
+          ),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.refresh),
+              onPressed: _loadFiles,
+            ),
+          ],
+        ),
+        body: _isLoading
+            ? const Center(child: CircularProgressIndicator())
+            : Column(
+                children: [
+                  // 路径面包屑
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.3),
+                    child: Text(
+                      '路径: $_currentPath',
+                      style: Theme.of(context).textTheme.bodySmall,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  Expanded(
+                    child: _files.isEmpty
+                        ? Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.folder_open, size: 64, color: Colors.grey[300]),
+                                const SizedBox(height: 16),
+                                const Text('空文件夹'),
+                              ],
+                            ),
+                          )
+                        : ListView.builder(
+                            itemCount: _files.length,
+                            itemBuilder: (context, index) {
+                              final file = _files[index];
+                              final isDir = file.isDir ?? false;
+                              final isMd = file.name?.toLowerCase().endsWith('.md') ?? false;
+                              
+                              return ListTile(
+                                leading: Icon(
+                                  isDir
+                                      ? Icons.folder
+                                      : isMd
+                                          ? Icons.description
+                                          : Icons.insert_drive_file,
+                                  color: isDir ? Colors.amber : (isMd ? Colors.blue : Colors.grey),
+                                ),
+                                title: Text(file.name ?? '未命名'),
+                                subtitle: isDir
+                                    ? null
+                                    : Text(_formatSize(file.size ?? 0)),
+                                trailing: isDir ? const Icon(Icons.chevron_right) : null,
+                                onTap: () {
+                                  if (isDir) {
+                                    _navigateToFolder(file.name!);
+                                  } else if (isMd) {
+                                    // 打开 Markdown 预览
+                                    Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (context) => CloudMdViewer(
+                                          filePath: _currentPath == '/' 
+                                              ? '/${file.name}' 
+                                              : '$_currentPath/${file.name}',
+                                          fileName: file.name!,
+                                        ),
+                                      ),
+                                    );
+                                  } else {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(content: Text('暂只支持预览 Markdown 文件')),
+                                    );
+                                  }
+                                },
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              ),
+        floatingActionButton: FloatingActionButton(
+          onPressed: () {
+             ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('上传功能开发中...')),
+             );
+          },
+          child: const Icon(Icons.add),
+        ),
+      ),
+    );
+  }
+
+  String _formatSize(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 }
