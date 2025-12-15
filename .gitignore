@@ -42,3 +42,8 @@ app.*.map
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Android/Gradle related
+android/.gradle/
+android/local.properties
+android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
