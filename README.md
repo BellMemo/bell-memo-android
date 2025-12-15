@@ -6,6 +6,18 @@
 
 BellMemo 是一个基于 Flutter 开发的备忘录应用, 并且支持简单的网盘功能.
 
+## ✨ 功能特性（当前实现）
+
+- **本地备忘录**：使用 `SharedPreferences` 持久化存储。
+- **富文本编辑（类 iOS 备忘录）**：
+  - 全屏编辑页（避免 BottomSheet 拖拽/键盘导致的布局崩溃）
+  - 默认极简界面，格式工具栏收纳在「格式」按钮中
+- **网盘（WebDAV / Alist）**：
+  - 文件浏览（目录进入/返回、刷新）
+  - Markdown 在线预览
+  - 备忘录一键备份到云端：将 Quill Delta 自动转换为 Markdown 后上传到 `/BellMemo/`
+- **服务端配置入口**：在网盘页根目录左上角菜单（Drawer）中配置 `域名/账号/密码`
+
 ## 🛠️ 环境要求
 
 - Flutter SDK >= 3.0.0
@@ -53,34 +65,19 @@ flutter run -d <device-id>
 
 ```
 lib/
-  app/
-    app.dart            # MaterialApp / theme / routes
-    bootstrap.dart      # main() 入口初始化（可选）
-  features/
-    splash/
-      presentation/
-        splash_screen.dart
-    memo/
-      domain/
-        memo.dart
-      data/
-        memo_service.dart        # 或 memo_repository.dart / datasource
-      presentation/
-        memo_page.dart
-        memo_edit_page.dart
-        memo_provider.dart       # 或 bloc/cubit/notifier
-    cloud/
-      presentation/
-        cloud_storage_page.dart
-    settings/
-      presentation/
-        settings_page.dart
-    shell/
-      presentation/
-        home_page.dart           # 导航壳（抽屉/底部导航）
-  shared/
-    widgets/                     # 通用组件
-    utils/                       # 工具方法
+  main.dart
+  splash_screen.dart
+  memo/
+    memo.dart
+    memo_store.dart
+  pages/
+    home_shell.dart              # 入口壳（抽屉导航）
+    memo_page.dart               # 备忘录列表
+    memo_editor_page.dart        # 备忘录全屏富文本编辑
+    cloud_page.dart              # 网盘浏览 + 配置抽屉 + 一键备份
+    cloud_md_viewer.dart         # 云端 Markdown 预览
+  services/
+    cloud_service.dart           # WebDAV 客户端 + Memo -> Markdown 同步
 ```
 
 ## 🎨 功能特性
@@ -89,6 +86,27 @@ lib/
 - ✅ Material Design 3 设计
 - ✅ 保留原有桌面图标设计
 - ✅ 简洁的演示界面
+- ✅ 富文本备忘录（flutter_quill）
+- ✅ WebDAV/Alist 网盘浏览与备份
+
+## ☁️ 配合 Alist（WebDAV）使用
+
+### 1) 服务端准备（Alist）
+
+- 在 Alist 开启 WebDAV（默认路径通常是 `/dav`）
+- 建议创建并挂载目录：`/BellMemo`
+
+### 2) 客户端配置
+
+进入「网盘」页面，在根目录左上角菜单中配置：
+
+- **服务器地址**：例如 `http://<ip>:5244/dav`
+- **用户名 / 密码**：Alist 的账号密码
+
+### 3) 一键备份
+
+连接成功后可在菜单中点击「立即备份所有备忘录」。
+备忘录会被转换为 Markdown 后上传到云端 `/BellMemo/`。
 
 ## 🚀 开发指南
 

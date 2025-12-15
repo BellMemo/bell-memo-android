@@ -83,7 +83,7 @@ class _HomeShellState extends State<HomeShell> {
                     ),
                     ListTile(
                       leading: const Icon(Icons.cloud_outlined),
-                      title: const Text('网盘（占位）'),
+                      title: const Text('网盘（开发中...)'),
                       selected: _index == 1,
                       onTap: () {
                         setState(() => _index = 1);

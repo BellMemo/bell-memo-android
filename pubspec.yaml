@@ -9,7 +9,14 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_markdown: ^0.7.7+1
+  flutter_quill: ^11.5.0
+  markdown_quill: ^4.3.0
+  open_filex: ^4.7.0
+  path: ^1.9.1
+  path_provider: ^2.1.5
   shared_preferences: ^2.2.2
+  webdav_client: ^1.2.2
 
 dev_dependencies:
   flutter_test:
