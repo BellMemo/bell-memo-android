@@ -59,5 +59,26 @@ flutter {
     source '../..'
 }
 
-dependencies {}
+configurations.all {
+    resolutionStrategy {
+        force 'androidx.browser:browser:1.8.0'
+        force 'androidx.core:core-ktx:1.13.1'
+        force 'androidx.core:core:1.13.1'
+    }
+}
+
+dependencies {
+    // Force downgrade dependencies that require bleeding edge AGP
+    constraints {
+        implementation('androidx.browser:browser:1.8.0') {
+            because '1.9.0 requires AGP 8.9.1'
+        }
+        implementation('androidx.core:core-ktx:1.13.1') {
+            because '1.17.0 requires AGP 8.9.1'
+        }
+        implementation('androidx.core:core:1.13.1') {
+            because '1.17.0 requires AGP 8.9.1'
+        }
+    }
+}
 
