@@ -1,7 +1,10 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter_quill/flutter_quill.dart' as quill;
 
 import '../memo/memo.dart';
 import '../memo/memo_store.dart';
+import 'memo_editor_page.dart';
 
 class MemoPage extends StatefulWidget {
   const MemoPage({super.key});
@@ -70,93 +73,11 @@ class MemoPageState extends State<MemoPage> {
   }
 
   Future<void> _openEditor({Memo? memo}) async {
-    final theme = Theme.of(context);
-
-    final titleCtrl = TextEditingController(text: memo?.title ?? '');
-    final contentCtrl = TextEditingController(text: memo?.content ?? '');
-
-    final saved = await showModalBottomSheet<bool>(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      builder: (sheetContext) {
-        return SafeArea(
-          child: Padding(
-            padding: EdgeInsets.only(
-              bottom: MediaQuery.of(sheetContext).viewInsets.bottom,
-            ),
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Text(
-                    memo == null ? '新建备忘录' : '编辑备忘录',
-                    style: theme.textTheme.titleLarge,
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: titleCtrl,
-                    textInputAction: TextInputAction.next,
-                    decoration: const InputDecoration(
-                      labelText: '标题',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: contentCtrl,
-                    maxLines: 6,
-                    decoration: const InputDecoration(
-                      labelText: '内容',
-                      alignLabelWithHint: true,
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  FilledButton.icon(
-                    onPressed: () async {
-                      final title = titleCtrl.text.trim();
-                      final content = contentCtrl.text.trim();
-
-                      if (title.isEmpty && content.isEmpty) {
-                        Navigator.pop(sheetContext, false);
-                        return;
-                      }
-
-                      final now = DateTime.now();
-                      final toSave = (memo == null)
-                          ? Memo(
-                              id: now.microsecondsSinceEpoch.toString(),
-                              title: title.isEmpty ? '无标题' : title,
-                              content: content,
-                              createdAt: now,
-                              updatedAt: now,
-                            )
-                          : memo.copyWith(
-                              title: title.isEmpty ? '无标题' : title,
-                              content: content,
-                              updatedAt: now,
-                            );
-
-                      await _store.upsert(toSave);
-                      if (!sheetContext.mounted) return;
-                      Navigator.pop(sheetContext, true);
-                    },
-                    icon: const Icon(Icons.save),
-                    label: const Text('保存'),
-                  ),
-                  const SizedBox(height: 8),
-                ],
-              ),
-            ),
-          ),
-        );
-      },
+    final saved = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => MemoEditorPage(memo: memo),
+      ),
     );
-
-    titleCtrl.dispose();
-    contentCtrl.dispose();
 
     if (saved == true) {
       await _reload();
@@ -223,10 +144,22 @@ class _MemoCard extends StatelessWidget {
     required this.onDelete,
   });
 
+  String _getPreviewText() {
+    try {
+      if (memo.content.startsWith('[') || memo.content.startsWith('{')) {
+         final json = jsonDecode(memo.content);
+         final doc = quill.Document.fromJson(json);
+         return doc.toPlainText().trim();
+      }
+    } catch (_) {}
+    return memo.content;
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
+    final preview = _getPreviewText();
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -256,10 +189,10 @@ class _MemoCard extends StatelessWidget {
                   ),
                 ],
               ),
-              if (memo.content.isNotEmpty) ...[
+              if (preview.isNotEmpty) ...[
                 const SizedBox(height: 6),
                 Text(
-                  memo.content,
+                  preview,
                   style: theme.textTheme.bodyMedium
                       ?.copyWith(color: cs.onSurfaceVariant),
                   maxLines: 3,
