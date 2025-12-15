@@ -15,7 +15,7 @@ BellMemo 是一个基于 Flutter 开发的备忘录应用, 并且支持简单的
 - **网盘（WebDAV / Alist）**：
   - 文件浏览（目录进入/返回、刷新）
   - Markdown 在线预览
-  - 备忘录一键备份到云端：将 Quill Delta 自动转换为 Markdown 后上传到 `/BellMemo/`
+  - 备忘录一键备份到云端：将 Quill Delta 自动转换为 Markdown 后上传到「备份目录」（默认 `/BellMemo`，可在连接配置里修改）
 - **服务端配置入口**：在网盘页根目录左上角菜单（Drawer）中配置 `域名/账号/密码`
 
 ## 🛠️ 环境要求
