@@ -52,18 +52,35 @@ flutter run -d <device-id>
 ## 📁 项目结构
 
 ```
-bell-memo-android/
-├── lib/                    # Dart 源代码目录
-│   └── main.dart          # 应用入口文件
-├── android/               # Android 平台特定代码
-│   └── app/
-│       └── src/main/
-│           ├── AndroidManifest.xml
-│           ├── kotlin/    # Kotlin 代码
-│           └── res/        # Android 资源文件（图标等）
-├── pubspec.yaml          # Flutter 项目配置文件
-├── analysis_options.yaml # Dart 代码分析配置
-└── README.md            # 项目说明文档
+lib/
+  app/
+    app.dart            # MaterialApp / theme / routes
+    bootstrap.dart      # main() 入口初始化（可选）
+  features/
+    splash/
+      presentation/
+        splash_screen.dart
+    memo/
+      domain/
+        memo.dart
+      data/
+        memo_service.dart        # 或 memo_repository.dart / datasource
+      presentation/
+        memo_page.dart
+        memo_edit_page.dart
+        memo_provider.dart       # 或 bloc/cubit/notifier
+    cloud/
+      presentation/
+        cloud_storage_page.dart
+    settings/
+      presentation/
+        settings_page.dart
+    shell/
+      presentation/
+        home_page.dart           # 导航壳（抽屉/底部导航）
+  shared/
+    widgets/                     # 通用组件
+    utils/                       # 工具方法
 ```
 
 ## 🎨 功能特性
