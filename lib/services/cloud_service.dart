@@ -83,7 +83,9 @@ class CloudService {
     try {
       // 使用 read 方法获取字节流
       final List<int> bytes = await _client!.read(path);
-      return utf8.decode(bytes);
+      // 兼容：部分网盘里的历史文件可能不是严格 UTF-8（例如包含非法字节序列）
+      // allowMalformed=true 可避免整条备忘录被“读失败而跳过”
+      return utf8.decode(bytes, allowMalformed: true);
     } catch (e) {
       throw Exception('读取文件失败: $e');
     }
@@ -306,5 +308,226 @@ $contentMd
 
     // 再次读取确认
     await _client!.readDir(dirWithSlash);
+  }
+
+  /// 从云端（默认 memoRoot）拉取所有 Markdown 备忘录，解析为 [Memo] 列表（不写入本地）。
+  ///
+  /// 约定：云端备忘录为 `.md` 文件，且文件头包含本应用导出的 front matter：
+  /// ---
+  /// uuid: "..."
+  /// title: "..."
+  /// created_at: 2024-01-01T00:00:00.000Z
+  /// updated_at: 2024-01-01T00:00:00.000Z
+  /// ---
+  Future<List<Memo>> fetchMemosFromCloud({
+    String? root,
+    bool recursive = true,
+  }) async {
+    if (_client == null) throw Exception('未连接到网盘');
+    final r = _normalizeWebdavPath(root ?? _memoRoot);
+    final files = await _listMdFiles(r, recursive: recursive);
+    final out = <Memo>[];
+    for (final f in files) {
+      try {
+        final md = await readTextFile(f);
+        final memo = _parseMemoMarkdown(md, fallbackIdSeed: f);
+        if (memo != null) out.add(memo);
+      } catch (_) {
+        // 单文件失败不影响整体（但打印出来方便排查）
+        print('fetchMemosFromCloud: skip $f (read/parse failed)');
+      }
+    }
+    return out;
+  }
+
+  /// 删除云端某条备忘录（根据 Markdown front matter 的 uuid 精确匹配）。
+  ///
+  /// 返回：是否找到并发起删除（remove 对 404 也视作成功）。
+  Future<bool> deleteMemoFromCloud(
+    String memoId, {
+    String? root,
+    bool recursive = false,
+  }) async {
+    if (_client == null) throw Exception('未连接到网盘');
+    final r = _normalizeWebdavPath(root ?? _memoRoot);
+    final files = await _listMdFiles(r, recursive: recursive);
+    for (final f in files) {
+      try {
+        final md = await readTextFile(f);
+        final uuid = _extractUuidFromMarkdown(md);
+        if (uuid == memoId) {
+          await _client!.remove(f);
+          return true;
+        }
+      } catch (_) {
+        // ignore and continue
+      }
+    }
+    return false;
+  }
+
+  Future<List<String>> _listMdFiles(String dir, {required bool recursive}) async {
+    final normalized = _normalizeWebdavPath(dir);
+    final current = (normalized == '/') ? '/' : '$normalized/';
+    final items = await listFiles(current);
+    final out = <String>[];
+
+    for (final it in items) {
+      final name = (it.name ?? '').trim();
+      if (name.isEmpty) continue;
+
+      final isDir = it.isDir ?? false;
+      final path = (it.path != null && (it.path ?? '').trim().isNotEmpty)
+          ? _normalizeWebdavPath(it.path!)
+          : _joinWebdavPath(normalized, name);
+
+      if (isDir) {
+        if (!recursive) continue;
+        // 某些服务会返回目录本身 '.' '..'，这里简单跳过
+        if (name == '.' || name == '..') continue;
+        out.addAll(await _listMdFiles(path, recursive: true));
+        continue;
+      }
+
+      if (name.toLowerCase().endsWith('.md')) {
+        out.add(path);
+      }
+    }
+    return out;
+  }
+
+  String _joinWebdavPath(String dir, String name) {
+    final d = _normalizeWebdavPath(dir);
+    final n = name.trim();
+    if (d == '/' || d.isEmpty) return '/$n';
+    return '$d/$n';
+  }
+
+  Memo? _parseMemoMarkdown(String md, {required String fallbackIdSeed}) {
+    // 解析 front matter：取第一段 --- ... ---
+    final text = md.replaceAll('\r\n', '\n');
+    String? front;
+    String body = text;
+
+    if (text.startsWith('---\n')) {
+      final end = text.indexOf('\n---', 4);
+      if (end > 0) {
+        // front: between first --- and the next ---
+        front = text.substring(4, end).trim();
+        // body: after second --- line
+        final after = text.indexOf('\n', end + 4);
+        body = after >= 0 ? text.substring(after + 1) : '';
+      }
+    }
+
+    final meta = <String, String>{};
+    if (front != null && front.isNotEmpty) {
+      for (final rawLine in front.split('\n')) {
+        final line = rawLine.trim();
+        if (line.isEmpty) continue;
+        final idx = line.indexOf(':');
+        if (idx <= 0) continue;
+        final k = line.substring(0, idx).trim();
+        var v = line.substring(idx + 1).trim();
+        // 去掉可选引号
+        if ((v.startsWith('"') && v.endsWith('"')) ||
+            (v.startsWith("'") && v.endsWith("'"))) {
+          v = v.substring(1, v.length - 1);
+        }
+        meta[k] = v;
+      }
+    }
+
+    final idRaw = meta['uuid']?.trim();
+    final id =
+        (idRaw != null && idRaw.isNotEmpty) ? idRaw : _fnv1a64Hex(fallbackIdSeed);
+
+    final titleMeta = meta['title']?.trim();
+    final created = _tryParseIso(meta['created_at']) ?? DateTime.now();
+    final updated = _tryParseIso(meta['updated_at']) ?? created;
+
+    final title = (titleMeta != null && titleMeta.isNotEmpty)
+        ? titleMeta
+        : _guessTitleFromBody(text) ?? '无标题';
+
+    // 去掉导出时自动加的 "# title" 标题行（仅当它确实等于标题），避免误删用户正文里的一级标题
+    var content = body.trimLeft();
+    if (content.startsWith('# ')) {
+      final firstLineEnd = content.indexOf('\n');
+      final heading =
+          (firstLineEnd >= 0 ? content.substring(2, firstLineEnd) : content.substring(2))
+              .trim();
+      if (heading.isNotEmpty && heading == title) {
+        if (firstLineEnd >= 0) {
+          content = content.substring(firstLineEnd + 1).trimLeft();
+        } else {
+          content = '';
+        }
+      }
+    }
+
+    return Memo(
+      id: id,
+      title: title,
+      content: content,
+      createdAt: created,
+      updatedAt: updated,
+    );
+  }
+
+  String? _extractUuidFromMarkdown(String md) {
+    final text = md.replaceAll('\r\n', '\n');
+    if (!text.startsWith('---\n')) return null;
+    final end = text.indexOf('\n---', 4);
+    if (end <= 0) return null;
+    final front = text.substring(4, end);
+    for (final rawLine in front.split('\n')) {
+      final line = rawLine.trim();
+      if (!line.startsWith('uuid:')) continue;
+      var v = line.substring('uuid:'.length).trim();
+      if ((v.startsWith('"') && v.endsWith('"')) ||
+          (v.startsWith("'") && v.endsWith("'"))) {
+        v = v.substring(1, v.length - 1);
+      }
+      return v.trim().isEmpty ? null : v.trim();
+    }
+    return null;
+  }
+
+  DateTime? _tryParseIso(String? s) {
+    final v = s?.trim();
+    if (v == null || v.isEmpty) return null;
+    try {
+      return DateTime.parse(v);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  String? _guessTitleFromBody(String fullText) {
+    final t = fullText.replaceAll('\r\n', '\n');
+    // 找第一行 "# xxx"
+    for (final line in t.split('\n')) {
+      final l = line.trim();
+      if (l.startsWith('# ')) {
+        final x = l.substring(2).trim();
+        return x.isEmpty ? null : x;
+      }
+    }
+    return null;
+  }
+
+  /// FNV-1a 64bit（无依赖、稳定）用于没有 uuid 的旧文件/外部文件做确定性 ID。
+  String _fnv1a64Hex(String input) {
+    const int fnvOffsetBasis = 0xcbf29ce484222325;
+    const int fnvPrime = 0x100000001b3;
+    var hash = fnvOffsetBasis;
+    final bytes = utf8.encode(input);
+    for (final b in bytes) {
+      hash ^= b;
+      // 64-bit overflow
+      hash = (hash * fnvPrime) & 0xFFFFFFFFFFFFFFFF;
+    }
+    return hash.toRadixString(16).padLeft(16, '0');
   }
 }

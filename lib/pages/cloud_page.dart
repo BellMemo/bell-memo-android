@@ -194,6 +194,55 @@ class CloudPageState extends State<CloudPage> {
     }
   }
 
+  Future<void> _restoreAllMemosFromCloud({bool silent = false}) async {
+    if (!_isConnected) return;
+    if (!silent) setState(() => _isLoading = true);
+
+    try {
+      final remoteMemos =
+          await CloudService().fetchMemosFromCloud(root: CloudService().memoRoot);
+      final local = await MemoStore().loadAll();
+      final localById = {for (final m in local) m.id: m};
+
+      int created = 0;
+      int updated = 0;
+      int skipped = 0;
+
+      for (final r in remoteMemos) {
+        final l = localById[r.id];
+        if (l == null) {
+          await MemoStore().upsert(r);
+          created++;
+          continue;
+        }
+        if (r.updatedAt.isAfter(l.updatedAt)) {
+          await MemoStore().upsert(r);
+          updated++;
+        } else {
+          skipped++;
+        }
+      }
+
+      if (!silent && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '云端发现 ${remoteMemos.length} 条，导入完成：新增 $created，更新 $updated，跳过 $skipped（返回备忘录页可下拉刷新）',
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      if (!silent && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('拉取失败: $e')),
+        );
+      }
+    } finally {
+      if (!silent && mounted) setState(() => _isLoading = false);
+    }
+  }
+
   void _navigateToFolder(String folderName) {
     setState(() {
       if (_currentPath == '/') {
@@ -332,6 +381,17 @@ class CloudPageState extends State<CloudPage> {
                 onTap: () {
                   Navigator.pop(context);
                   _syncAllMemos();
+                },
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.download, color: Colors.blue),
+                title: const Text('从云端拉取历史备忘录',
+                    style: TextStyle(color: Colors.blue)),
+                subtitle: const Text('从备份目录读取 .md 并导入本地（若云端更新更晚则覆盖本地）'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _restoreAllMemosFromCloud();
                 },
               ),
               ListTile(

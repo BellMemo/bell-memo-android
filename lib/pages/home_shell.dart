@@ -89,6 +89,7 @@ class _HomeShellState extends State<HomeShell> {
                       selected: _index == 0,
                       onTap: () {
                         setState(() => _index = 0);
+                        _memoPageKey.currentState?.reload();
                         Navigator.pop(context);
                       },
                     ),

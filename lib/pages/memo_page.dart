@@ -4,7 +4,9 @@ import 'package:flutter_quill/flutter_quill.dart' as quill;
 
 import '../memo/memo.dart';
 import '../memo/memo_store.dart';
+import '../services/cloud_service.dart';
 import 'memo_editor_page.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class MemoPage extends StatefulWidget {
   const MemoPage({super.key});
@@ -26,6 +28,7 @@ class MemoPageState extends State<MemoPage> {
   }
 
   void createNewMemo() => _openEditor();
+  Future<void> reload() => _reload();
 
   Future<void> _reload() async {
     setState(() => _loading = true);
@@ -66,10 +69,34 @@ class MemoPageState extends State<MemoPage> {
 
   Future<void> _delete(Memo memo) async {
     await _store.delete(memo.id);
+    await _deleteMemoFromCloudIfConfigured(memo.id);
     await _reload();
     if (!mounted) return;
     ScaffoldMessenger.of(context)
         .showSnackBar(const SnackBar(content: Text('已删除')));
+  }
+
+  Future<void> _deleteMemoFromCloudIfConfigured(String memoId) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final url = prefs.getString('cloud_url');
+      final user = prefs.getString('cloud_user');
+      final pass = prefs.getString('cloud_pass');
+      final root = prefs.getString('cloud_root');
+
+      if (url == null || user == null || pass == null) return;
+      if (root != null && root.isNotEmpty) {
+        CloudService().setMemoRoot(root);
+      }
+
+      if (!CloudService().isConnected) {
+        await CloudService().connect(url, user, pass);
+      }
+
+      await CloudService().deleteMemoFromCloud(memoId);
+    } catch (_) {
+      // 云端删除失败不影响本地删除
+    }
   }
 
   Future<void> _openEditor({Memo? memo}) async {
