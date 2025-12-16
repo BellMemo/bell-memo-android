@@ -1,8 +1,13 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:open_filex/open_filex.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:webdav_client/webdav_client.dart' as webdav;
 import '../services/cloud_service.dart';
 import '../memo/memo_store.dart';
+import 'cloud_dir_picker_page.dart';
 import 'cloud_md_viewer.dart';
 
 class CloudPage extends StatefulWidget {
@@ -24,6 +29,8 @@ class CloudPageState extends State<CloudPage> {
   final TextEditingController _passController = TextEditingController();
   final TextEditingController _rootController =
       TextEditingController(text: '/BellMemo');
+
+  bool _isOpBusy = false;
 
   /// 供外部（HomeShell）调用：打开设置面板
   void openSettings() {
@@ -87,8 +94,8 @@ class CloudPageState extends State<CloudPage> {
 
       setState(() {
         _isConnected = true;
-        // 默认打开备份目录（更符合使用预期，也避免 WebDAV 根目录为空导致“黑屏感”）
-        _currentPath = effectiveRoot;
+        // 连接成功后，默认进入网盘根目录 /（而不是备份目录），让用户从顶层浏览
+        _currentPath = '/';
       });
       // 如果自动补全了 /dav，顺便更新输入框
       _urlController.text = effectiveUrl;
@@ -113,6 +120,32 @@ class CloudPageState extends State<CloudPage> {
         _isLoading = false;
       });
     }
+  }
+
+  Future<void> _pickBackupDirFromCloud() async {
+    if (!_isConnected) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('请先连接网盘后再选择目录')),
+      );
+      return;
+    }
+    final selected = await Navigator.of(context).push<String>(
+      MaterialPageRoute(
+        builder: (_) => CloudDirPickerPage(initialPath: _rootController.text),
+      ),
+    );
+    if (selected == null || selected.trim().isEmpty) return;
+
+    final path = selected.trim();
+    _rootController.text = path;
+    CloudService().setMemoRoot(path);
+
+    // 保存并刷新当前目录
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('cloud_root', path);
+    if (!mounted) return;
+    setState(() => _currentPath = path);
+    await _loadFiles();
   }
 
   Future<void> _loadFiles() async {
@@ -157,6 +190,166 @@ class CloudPageState extends State<CloudPage> {
           _isLoading = false;
         });
       }
+    }
+  }
+
+  String _joinPath(String dir, String name) {
+    if (dir == '/') return '/$name';
+    return '${dir.endsWith('/') ? dir.substring(0, dir.length - 1) : dir}/$name';
+  }
+
+  String _resolveRemotePath(webdav.File file, String name) {
+    final fp = (file.path ?? '').trim();
+    if (fp.isNotEmpty) return fp;
+    return _joinPath(_currentPath, name);
+  }
+
+  Future<void> _uploadToCurrentDir() async {
+    if (!_isConnected || _isOpBusy) return;
+    setState(() => _isOpBusy = true);
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        allowMultiple: true,
+        withData: false,
+      );
+      if (result == null || result.files.isEmpty) return;
+
+      int ok = 0;
+      for (final f in result.files) {
+        final localPath = f.path;
+        final name = f.name;
+        if (localPath == null || localPath.isEmpty) continue;
+        if (name.isEmpty) continue;
+
+        final remotePath = _joinPath(_currentPath, name);
+        await CloudService().uploadFile(localPath, remotePath);
+        ok++;
+      }
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已上传 $ok 个文件到 $_currentPath')),
+      );
+      await _loadFiles();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('上传失败: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _isOpBusy = false);
+    }
+  }
+
+  Future<void> _downloadFile(webdav.File file) async {
+    if (!_isConnected || _isOpBusy) return;
+    final name = (file.name ?? '').trim();
+    if (name.isEmpty) return;
+    if (file.isDir ?? false) return;
+
+    setState(() => _isOpBusy = true);
+    try {
+      final remotePath = _resolveRemotePath(file, name);
+      final dir = await getTemporaryDirectory();
+      final localPath = p.join(dir.path, name);
+      await CloudService().downloadFile(remotePath, localPath);
+      await OpenFilex.open(localPath);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已下载到: $localPath')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('下载失败: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _isOpBusy = false);
+    }
+  }
+
+  Future<void> _deleteRemote(webdav.File file) async {
+    if (!_isConnected || _isOpBusy) return;
+    final name = (file.name ?? '').trim();
+    if (name.isEmpty) return;
+
+    final remotePath = _resolveRemotePath(file, name);
+    final isDir = file.isDir ?? false;
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('确认删除'),
+        content: Text('确定删除${isDir ? '文件夹' : '文件'}：$name ?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('删除')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    setState(() => _isOpBusy = true);
+    try {
+      await CloudService().deletePath(remotePath);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已删除: $name')),
+      );
+      await _loadFiles();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('删除失败: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _isOpBusy = false);
+    }
+  }
+
+  Future<void> _createFolderInCurrentDir() async {
+    if (!_isConnected || _isOpBusy) return;
+    final ctrl = TextEditingController();
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('新建文件夹'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: '文件夹名称',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+            child: const Text('创建'),
+          ),
+        ],
+      ),
+    );
+    if (name == null || name.isEmpty) return;
+
+    setState(() => _isOpBusy = true);
+    try {
+      final remote = _joinPath(_currentPath, name);
+      await CloudService().createDir(remote);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已创建文件夹: $name')),
+      );
+      // 必须显式 await 刷新，确保新文件夹能刷出来
+      await _loadFiles();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('创建失败: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _isOpBusy = false);
     }
   }
 
@@ -354,6 +547,15 @@ class CloudPageState extends State<CloudPage> {
                   isDense: true,
                 ),
               ),
+              const SizedBox(height: 10),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: _isLoading ? null : _pickBackupDirFromCloud,
+                  icon: const Icon(Icons.folder_open),
+                  label: const Text('浏览选择备份目录（可退出）'),
+                ),
+              ),
               const SizedBox(height: 24),
               SizedBox(
                 width: double.infinity,
@@ -547,11 +749,31 @@ class CloudPageState extends State<CloudPage> {
                             .colorScheme
                             .surfaceVariant
                             .withOpacity(0.3),
-                        child: Text(
-                          '路径: $_currentPath',
-                          style: Theme.of(context).textTheme.bodySmall,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
+                        child: Row(
+                          children: [
+                            IconButton(
+                              tooltip: '上级目录',
+                              onPressed: isRoot ? null : _navigateUp,
+                              icon: const Icon(Icons.arrow_upward),
+                            ),
+                            IconButton(
+                              tooltip: '回到备份目录',
+                              onPressed: () {
+                                setState(() => _currentPath = CloudService().memoRoot);
+                                _loadFiles();
+                              },
+                              icon: const Icon(Icons.home_outlined),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                '路径: $_currentPath',
+                                style: Theme.of(context).textTheme.bodySmall,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                       Expanded(
@@ -591,9 +813,33 @@ class CloudPageState extends State<CloudPage> {
                                     subtitle: isDir
                                         ? null
                                         : Text(_formatSize(file.size ?? 0)),
-                                    trailing: isDir
-                                        ? const Icon(Icons.chevron_right)
-                                        : null,
+                                    trailing: PopupMenuButton<String>(
+                                      tooltip: '更多',
+                                      onSelected: (v) {
+                                        if (v == 'download') _downloadFile(file);
+                                        if (v == 'delete') _deleteRemote(file);
+                                      },
+                                      itemBuilder: (ctx) => [
+                                        if (!isDir)
+                                          const PopupMenuItem(
+                                            value: 'download',
+                                            child: ListTile(
+                                              leading: Icon(Icons.download),
+                                              title: Text('下载'),
+                                            ),
+                                          ),
+                                        const PopupMenuItem(
+                                          value: 'delete',
+                                          child: ListTile(
+                                            leading: Icon(Icons.delete_outline),
+                                            title: Text('删除'),
+                                          ),
+                                        ),
+                                      ],
+                                      child: isDir
+                                          ? const Icon(Icons.chevron_right)
+                                          : const Icon(Icons.more_vert),
+                                    ),
                                     onTap: name.isEmpty
                                         ? null
                                         : () {
@@ -625,6 +871,48 @@ class CloudPageState extends State<CloudPage> {
                                   );
                                 },
                               ),
+                      ),
+                      // 通用网盘操作栏：任何目录（包括 /BellMemo）都可以上传/新建文件夹
+                      SafeArea(
+                        top: false,
+                        child: Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).colorScheme.surface,
+                            border: Border(
+                              top: BorderSide(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .outlineVariant
+                                    .withOpacity(0.5),
+                              ),
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: OutlinedButton.icon(
+                                  onPressed: (_isLoading || _isOpBusy)
+                                      ? null
+                                      : _uploadToCurrentDir,
+                                  icon: const Icon(Icons.upload),
+                                  label: const Text('上传'),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: OutlinedButton.icon(
+                                  onPressed: (_isLoading || _isOpBusy)
+                                      ? null
+                                      : _createFolderInCurrentDir,
+                                  icon: const Icon(Icons.create_new_folder_outlined),
+                                  label: const Text('新建文件夹'),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       ),
                     ],
                   ),

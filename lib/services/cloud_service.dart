@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:webdav_client/webdav_client.dart' as webdav;
 import 'package:markdown_quill/markdown_quill.dart';
 import 'package:dart_quill_delta/dart_quill_delta.dart';
+import 'package:markdown/markdown.dart' as md;
 import 'package:dio/dio.dart';
 import '../memo/memo.dart';
 
@@ -114,6 +115,16 @@ class CloudService {
      } catch (e) {
        throw Exception('上传失败: $e');
      }
+  }
+
+  /// 删除云端文件或文件夹（WebDAV DELETE；对 404 视作成功）
+  Future<void> deletePath(String path) async {
+    if (_client == null) throw Exception('未连接到网盘');
+    try {
+      await _client!.remove(path);
+    } catch (e) {
+      throw Exception('删除失败: $e');
+    }
   }
 
   // 这里的 sync 是简单的单向覆盖：Local -> Cloud
@@ -466,10 +477,14 @@ $contentMd
       }
     }
 
+    // 尝试把 Markdown 还原成 Quill Delta（JSON 字符串），以恢复粗体/列表/引用等基础样式。
+    // 转换失败则回退到纯文本（Markdown 原文）。
+    final contentToStore = _tryConvertMarkdownToDeltaJson(content) ?? content;
+
     return Memo(
       id: id,
       title: title,
-      content: content,
+      content: contentToStore,
       createdAt: created,
       updatedAt: updated,
     );
@@ -529,5 +544,33 @@ $contentMd
       hash = (hash * fnvPrime) & 0xFFFFFFFFFFFFFFFF;
     }
     return hash.toRadixString(16).padLeft(16, '0');
+  }
+
+  String? _tryConvertMarkdownToDeltaJson(String markdownText) {
+    final raw = markdownText.trim();
+    if (raw.isEmpty) return null;
+
+    // 简单 heuristic：避免把普通短文本也强转成 delta（虽然通常也没问题）
+    final looksLikeMd = RegExp(
+      r'(^|\n)\s{0,3}(#{1,6}\s|[-*+]\s|\d+\.\s|>\s|```)|\*\*|`[^`]+`|\[[^\]]+\]\([^)]+\)',
+      multiLine: true,
+    ).hasMatch(raw);
+    if (!looksLikeMd && raw.length < 80) return null;
+
+    try {
+      final doc = md.Document(
+        encodeHtml: false,
+        extensionSet: md.ExtensionSet.gitHubFlavored,
+      );
+      final mdToDelta = MarkdownToDelta(markdownDocument: doc);
+      final delta = mdToDelta.convert(raw);
+      final jsonList = delta.toJson();
+      if (jsonList.isNotEmpty) {
+        return jsonEncode(jsonList);
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
   }
 }

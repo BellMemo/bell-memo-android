@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_quill/flutter_quill.dart' as quill;
+import 'package:markdown/markdown.dart' as md;
+import 'package:markdown_quill/markdown_quill.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../memo/memo.dart';
@@ -54,6 +56,22 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
     }
 
     if (memo != null && memo.content.isNotEmpty) {
+      // 兼容：从云端恢复的旧数据可能是 Markdown 纯文本，这里尝试还原为富文本 Delta
+      final converted = _tryConvertMarkdownToDeltaJson(memo.content);
+      if (converted != null) {
+        try {
+          final json = jsonDecode(converted);
+          if (json is List) {
+            return quill.QuillController(
+              document: quill.Document.fromJson(json),
+              selection: const TextSelection.collapsed(offset: 0),
+            );
+          }
+        } catch (_) {
+          // fallthrough to plain text
+        }
+      }
+
       final doc = quill.Document()..insert(0, memo.content);
       return quill.QuillController(
         document: doc,
@@ -62,6 +80,33 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
     }
 
     return quill.QuillController.basic();
+  }
+
+  String? _tryConvertMarkdownToDeltaJson(String markdownText) {
+    final raw = markdownText.trim();
+    if (raw.isEmpty) return null;
+
+    final looksLikeMd = RegExp(
+      r'(^|\n)\s{0,3}(#{1,6}\s|[-*+]\s|\d+\.\s|>\s|```)|\*\*|`[^`]+`|\[[^\]]+\]\([^)]+\)',
+      multiLine: true,
+    ).hasMatch(raw);
+    if (!looksLikeMd && raw.length < 80) return null;
+
+    try {
+      final doc = md.Document(
+        encodeHtml: false,
+        extensionSet: md.ExtensionSet.gitHubFlavored,
+      );
+      final mdToDelta = MarkdownToDelta(markdownDocument: doc);
+      final delta = mdToDelta.convert(raw);
+      final jsonList = delta.toJson();
+      if (jsonList.isNotEmpty) {
+        return jsonEncode(jsonList);
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
   }
 
   bool get _isDocEmpty => _quillCtrl.document.toPlainText().trim().isEmpty;
@@ -148,17 +193,29 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
     showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
-      useSafeArea: true,
+      // 关键：让 BottomSheet 能跟随键盘 viewInsets 上移，而不是“固定浮在键盘上方”
+      isScrollControlled: true,
+      useSafeArea: false,
       builder: (ctx) {
-        return SafeArea(
-          child: quill.QuillSimpleToolbar(
-            controller: _quillCtrl,
-            config: const quill.QuillSimpleToolbarConfig(
-              showFontFamily: false,
-              showFontSize: false,
-              showSubscript: false,
-              showSuperscript: false,
-              showSearchButton: false,
+        final bottomInset = MediaQuery.of(ctx).viewInsets.bottom;
+        return AnimatedPadding(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+          padding: EdgeInsets.only(bottom: bottomInset),
+          child: SafeArea(
+            top: false,
+            child: Material(
+              color: Theme.of(ctx).colorScheme.surface,
+              child: quill.QuillSimpleToolbar(
+                controller: _quillCtrl,
+                config: const quill.QuillSimpleToolbarConfig(
+                  showFontFamily: false,
+                  showFontSize: false,
+                  showSubscript: false,
+                  showSuperscript: false,
+                  showSearchButton: false,
+                ),
+              ),
             ),
           ),
         );
