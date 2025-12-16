@@ -185,12 +185,17 @@ dart format lib/
 # 构建调试版本
 flutter build apk --debug
 
-# 构建发布版本
+# 构建发布版本（已优化：代码混淆 + 资源压缩 + 按 ABI 分割）
 flutter build apk --release
 
 # 构建 App Bundle（推荐用于 Google Play）
 flutter build appbundle --release
 ```
+
+**APK 大小优化：**
+- ✅ 启用代码混淆和资源压缩
+- ✅ 按 ABI 分割 APK（为不同架构生成独立 APK，减小单个 APK 大小）
+- ✅ 构建后的 APK 位于 `build/app/outputs/apk/release/`，按架构分别生成（如 `app-arm64-v8a-release.apk`）
 
 ## 📄 许可证
 
